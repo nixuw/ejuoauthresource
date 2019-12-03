@@ -4,6 +4,8 @@
 --- DateTime: 2019-12-02 18:12
 ---
 
+local httpmod = require "resty.http"
+local cjson = require "cjson.safe"
 
 local kong = kong
 
@@ -21,11 +23,6 @@ function ejuoauthresource:access(conf)
         return
     end
 
-    -- 如果授权服务器验证端点也配在网关上，则不应走这个插件？
-    if ngx.re.find(conf.tokenValidURL,ngx.var.uri) then
-        kong.log.err("授权服务器验证端点不应配置这个网关!!!")
-        return
-    end
 
 
     -- 获取token
@@ -33,6 +30,7 @@ function ejuoauthresource:access(conf)
     if not authorization then
        return kong.response.exit(ngx.HTTP_FORBIDDEN, { message = "Your Request is not allowed" })
     end
+
 
     -- 解析token
     local match,err = ngx.re.match(authorization,"Bearer (.*)","jio")
@@ -45,21 +43,40 @@ function ejuoauthresource:access(conf)
 
     -- 去验证token
     local base64 = ngx.encode_base64(conf.resourceId .. conf.resourceSecret)
-    ngx.req.set_header("authorization","basic ".. base64)
-    local resp = ngx.location.capture("/internal", {
-        method = ngx.HTTP_GET,
-        args = {url=conf.tokenValidURL .. "?token="..token},
-    })
 
 
-    if not resp or resp.status ~= ngx.HTTP_OK then
-        return kong.response.exit(ngx.HTTP_FORBIDDEN, { message = "authorization server failed" })
+    -- 如果授权服务器也走了该插件，则能过break跳过请求授权服务器，避免死循环
+    if not ngx.req.get_uri_args()["break"] then
+        local http = httpmod:new()
+
+        local res, err = http:request_uri(conf.tokenValidURL, {
+            method = "GET",
+            headers = {
+                ["Content-Type"] = "application/x-www-form-urlencoded",
+                ["Authorization"] = "Basic ".. base64,
+                -- ["Accept"] = "application/json"
+            },
+
+            query = "break=1&token="..token,
+
+            keepalive_timeout = 60,
+            keepalive_pool = 10
+        })
+
+
+        if  err or resp.status ~= ngx.HTTP_OK then
+            return kong.response.exit(ngx.HTTP_FORBIDDEN, { message = "authorization server failed" })
+        end
+
+        -- 把结果做为请求参数，传给服务提供者
+        local args = ngx.req.get_uri_args()
+        args["authctx"] = resp.body
+        ngx.req.set_uri_args(args)
+
+        http:close()
+    else
+        kong.log.err(cjson.encode(ngx.req.get_uri_args()))
     end
-
-     -- 把结果做为请求参数，传给服务提供者
-     local args = ngx.req.get_uri_args()
-     args["authctx"] = ngx.encode_base64(resp.body)
-     ngx.req.set_uri_args(args)
 
 end
 
