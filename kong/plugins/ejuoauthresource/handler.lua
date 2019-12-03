@@ -58,7 +58,7 @@ function ejuoauthresource:access(conf)
 
      -- 把结果做为请求参数，传给服务提供者
      local args = ngx.req.get_uri_args()
-     args["authcontext"] = ngx.encode_base64(resp.body)
+     args["authctx"] = ngx.encode_base64(resp.body)
      ngx.req.set_uri_args(args)
 
 end
